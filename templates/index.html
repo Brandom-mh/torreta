@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Torreta Monitor</title>
+    <style>
+        body { background: #1a1a1a; color: white; text-align: center; font-family: sans-serif; }
+        .container { margin-top: 50px; }
+        img { border: 5px solid #333; border-radius: 10px; width: 80%; max-width: 640px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Sistema de Control de Torreta</h1>
+        <img src="{{ url_for('video_feed') }}" width="640" height="480">
+        <p>Estado: Procesando en Python...</p>
+    </div>
+</body>
+</html>
