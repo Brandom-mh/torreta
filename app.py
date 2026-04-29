@@ -1,59 +1,49 @@
-from flask import Flask, render_template, Response
 import cv2
+import serial
 import time
 
-app = Flask(__name__)
+# 1. Configuración de la comunicación Serial
+# El puerto suele ser /dev/ttyACM0 o /dev/ttyUSB0 en Raspberry
+try:
+    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+    time.sleep(2) # Espera a que el Arduino se reinicie
+except:
+    print("No se encontró el Arduino en /dev/ttyACM0, intentando otro...")
+    arduino = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)
 
-# Configuración inicial (tu lógica original) 
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+# 2. Configuración de Cámara (Resolución reducida para Pi 3B)
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # [cite: 147]
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240) # [cite: 147]
 
-def gen_frames():
-    frame_anterior = None
-    faces = []
-    
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-        
-        # --- Tu lógica de detección actual ---
+ruta_xml = '/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml'
+face_cascade = cv2.CascadeClassifier(ruta_xml)
+
+contador_frames = 0
+
+while True:
+    ret, frame = cap.read()
+    if not ret: break
+
+    # Procesar solo cada 3 frames para agilidad [cite: 150, 161]
+    if contador_frames % 3 == 0:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray_blur = cv2.GaussianBlur(gray, (21, 21), 0)
         
-        if frame_anterior is None:
-            frame_anterior = gray_blur
-            continue
-
-        delta = cv2.absdiff(frame_anterior, gray_blur)
-        thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
-        contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        movimiento = any(cv2.contourArea(c) > 100 for c in contornos)
-        frame_anterior = gray_blur
-
-        if movimiento:
-            faces = face_cascade.detectMultiScale(gray, 1.3, 5, minSize=(30, 30))
+        # scaleFactor alto para detección rápida [cite: 148, 160]
+        faces = face_cascade.detectMultiScale(gray, 1.5, 5, minSize=(30, 30))
 
         if len(faces) > 0:
-            x, y, w, h = faces[0]
-            cx, cy = x + w // 2, y + h // 2
-            cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
-            # Aquí puedes seguir usando tu print o enviar a Serial 
-        
-        # --- Codificación para Streaming Web --- [cite: 23]
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            (x, y, w, h) = faces[0]
+            cx = x + w // 2
+            cy = y + h // 2
+            
+            # Enviar coordenadas al Arduino en formato "X,Y\n"
+            cadena_datos = f"{cx},{cy}\n"
+            arduino.write(cadena_datos.encode()) # [cite: 26, 105]
+            print(f"Enviado a Arduino: {cadena_datos.strip()}") # [cite: 104]
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+    contador_frames += 1
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+cap.release()
+arduino.close()
