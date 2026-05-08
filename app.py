@@ -2,48 +2,56 @@ import cv2
 import serial
 import time
 
-# 1. Configuración de la comunicación Serial
-# El puerto suele ser /dev/ttyACM0 o /dev/ttyUSB0 en Raspberry
+# --- CONFIGURACIÓN ---
+PUERTO_SERIAL = 'COM3' 
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
 try:
-    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
-    time.sleep(2) # Espera a que el Arduino se reinicie
+    arduino = serial.Serial(PUERTO_SERIAL, 9600, timeout=0.1)
+    time.sleep(2)
+    print("✓ Conectado al Arduino")
 except:
-    print("No se encontró el Arduino en /dev/ttyACM0, intentando otro...")
-    arduino = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)
+    arduino = None
 
-# 2. Configuración de Cámara (Resolución reducida para Pi 3B)
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # [cite: 147]
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240) # [cite: 147]
+# Resolución de referencia
+WIDTH, HEIGHT = 640, 480
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
 
-ruta_xml = '/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml'
-face_cascade = cv2.CascadeClassifier(ruta_xml)
-
-contador_frames = 0
+print("--- Ejecutando con Ejes Corregidos ---")
 
 while True:
     ret, frame = cap.read()
     if not ret: break
 
-    # Procesar solo cada 3 frames para agilidad [cite: 150, 161]
-    if contador_frames % 3 == 0:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # 1. Efecto Espejo: Esto ayuda a que "izquierda" sea "izquierda" en pantalla
+    frame = cv2.flip(frame, 1)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.2, 5, minSize=(50, 50))
+
+    for (x, y, w, h) in faces:
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
-        # scaleFactor alto para detección rápida [cite: 148, 160]
-        faces = face_cascade.detectMultiScale(gray, 1.5, 5, minSize=(30, 30))
+        cx = x + w // 2
+        cy = y + h // 2
+        
+        if arduino:
+           
+            env_x = WIDTH - cx  
+            env_y = HEIGHT - cy 
 
-        if len(faces) > 0:
-            (x, y, w, h) = faces[0]
-            cx = x + w // 2
-            cy = y + h // 2
+        
+            env_x = int(env_x * (320 / WIDTH))
+            env_y = int(env_y * (240 / HEIGHT))
             
-            # Enviar coordenadas al Arduino en formato "X,Y\n"
-            cadena_datos = f"{cx},{cy}\n"
-            arduino.write(cadena_datos.encode()) # [cite: 26, 105]
-            print(f"Enviado a Arduino: {cadena_datos.strip()}") # [cite: 104]
+            mensaje = f"S{env_x},{env_y}\n"
+            arduino.write(mensaje.encode())
 
-    contador_frames += 1
-    if cv2.waitKey(1) & 0xFF == ord('q'): break
+    cv2.imshow('Torreta - Ejes Corregidos', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
 cap.release()
-arduino.close()
+cv2.destroyAllWindows()
+if arduino: arduino.close()
