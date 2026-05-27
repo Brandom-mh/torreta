@@ -2,27 +2,29 @@ import cv2
 import serial
 import time
 
-# --- CONFIGURACIÓN ---
 PUERTO_SERIAL = '/dev/ttyUSB0'
-
 RUTA_XML = '/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml'
 
-# =========================
-# INICIALIZACIÓN SERIAL
-# =========================
+ANCHO = 320
+ALTO = 240
+
+SUAVIZADO = 0.30
+INTERVALO_ENVIO = 0.05
+
+# Contraste
+ALPHA = 1.5   # contraste: 1.0 normal, 1.5 más contraste
+BETA = 25     # brillo: 0 normal, 20-40 más brillo
+
+ultimo_envio = 0
+servo_x_actual = 160
+servo_y_actual = 120
+
 try:
     arduino = serial.Serial(PUERTO_SERIAL, 9600, timeout=1)
-
-    # Esperar reinicio del Arduino
     time.sleep(2)
 
-    # =========================
-    # CALIBRACIÓN INICIAL
-    # =========================
-    # Mandar servos a posición inicial (0,0)
+    # Posición inicial
     arduino.write(b"S0,0\n")
-
-    # Esperar movimiento
     time.sleep(2)
 
     print(f"✓ Conectado al Arduino en {PUERTO_SERIAL}")
@@ -31,17 +33,10 @@ except Exception as e:
     print(f"! Error Serial: {e}")
     arduino = None
 
-# =========================
-# CONFIGURACIÓN DE CÁMARA
-# =========================
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, ANCHO)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, ALTO)
 
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-
-# =========================
-# CARGA DEL CLASIFICADOR
-# =========================
 face_cascade = cv2.CascadeClassifier(RUTA_XML)
 
 if face_cascade.empty():
@@ -49,12 +44,10 @@ if face_cascade.empty():
     exit()
 
 contador_frames = 0
+prev_gray = None
 
-print("--- Torreta Iniciada ---")
+print("--- Torreta Iniciada: tracking continuo con contraste ---")
 
-# =========================
-# LOOP PRINCIPAL
-# =========================
 try:
     while True:
 
@@ -64,41 +57,87 @@ try:
             print("! Error al capturar video")
             break
 
-        # Procesar 1 de cada 3 frames
         if contador_frames % 3 == 0:
+
+            # ==============================
+            # MEJORA DE CONTRASTE Y BRILLO
+            # Fórmula: pixel_nuevo = ALPHA * pixel_original + BETA
+            # ==============================
+            frame = cv2.convertScaleAbs(frame, alpha=ALPHA, beta=BETA)
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+            # Ecualización de histograma para mejorar contraste
+            gray = cv2.equalizeHist(gray)
+
             faces = face_cascade.detectMultiScale(
                 gray,
-                scaleFactor=1.2,
-                minNeighbors=5,
-                minSize=(40, 40)
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(30, 30)
             )
 
-            # Si detecta rostro
             if len(faces) > 0:
 
-                (x, y, w, h) = faces[0]
+                rostro_movil = None
+                mayor_movimiento = 0
 
-                # Centro del rostro
-                cx = x + w // 2
-                cy = y + h // 2
+                if prev_gray is not None:
 
-                print(f"Rostro detectado -> X:{cx} Y:{cy}")
+                    diff = cv2.absdiff(prev_gray, gray)
 
-                # Enviar coordenadas al Arduino
-                if arduino:
+                    for (x, y, w, h) in faces:
 
-                    try:
-                        mensaje = f"S{cx},{cy}\n"
+                        zona_movimiento = diff[y:y+h, x:x+w]
 
-                        arduino.write(mensaje.encode())
+                        _, zona_binaria = cv2.threshold(
+                            zona_movimiento,
+                            25,
+                            255,
+                            cv2.THRESH_BINARY
+                        )
 
-                        print(f"Enviado -> {mensaje.strip()}")
+                        movimiento = cv2.countNonZero(zona_binaria)
 
-                    except Exception as e:
-                        print(f"! Error enviando datos: {e}")
+                        if movimiento > mayor_movimiento:
+                            mayor_movimiento = movimiento
+                            rostro_movil = (x, y, w, h)
+
+                if rostro_movil is not None and mayor_movimiento > 100:
+
+                    x, y, w, h = rostro_movil
+
+                    cx = x + w // 2
+                    cy = y + h // 2
+
+                    # Suavizado continuo
+                    servo_x_actual = int(
+                        servo_x_actual + (cx - servo_x_actual) * SUAVIZADO
+                    )
+
+                    servo_y_actual = int(
+                        servo_y_actual + (cy - servo_y_actual) * SUAVIZADO
+                    )
+
+                    ahora = time.time()
+
+                    if arduino and (ahora - ultimo_envio) >= INTERVALO_ENVIO:
+
+                        try:
+                            mensaje = f"S{servo_x_actual},{servo_y_actual}\n"
+                            arduino.write(mensaje.encode())
+
+                            ultimo_envio = ahora
+
+                            print(
+                                f"Enviado -> {mensaje.strip()} | "
+                                f"Movimiento:{mayor_movimiento}"
+                            )
+
+                        except Exception as e:
+                            print(f"! Error enviando datos: {e}")
+
+            prev_gray = gray.copy()
 
         contador_frames += 1
 
@@ -107,18 +146,11 @@ except KeyboardInterrupt:
 
 finally:
 
-    # =========================
-    # REGRESAR A POSICIÓN INICIAL
-    # =========================
     if arduino:
         try:
             print("Regresando servos a posición inicial...")
-
             arduino.write(b"S0,0\n")
-
-            # Esperar a que los servos se muevan
             time.sleep(2)
-
         except Exception as e:
             print(f"! Error al regresar servos: {e}")
 
@@ -128,3 +160,4 @@ finally:
         arduino.close()
 
     print("✓ Recursos liberados")
+
